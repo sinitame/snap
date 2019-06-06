@@ -60,8 +60,19 @@ static void mbus_to_anytype(snap_membus_t *data_to_be_written, mat_elmt_t *table
 	}
 }
 
+void read_flag_mem(snap_membus_t *din_gmem, uint64_t flag_addr, bool *flag){
+    snap_membus_t flag_512b;
+    memcpy(&flag_512b, din_gmem + flag_addr, BPERDW);
+    *flag = (bool)flag_512b(0,0);
+}
+
+void write_flag_mem(snap_membus_t *dout_gmem, uint64_t flag_addr, bool flag){
+    snap_membus_t flag_512b;
+    flag_512b(0,0) = flag;
+    memcpy(dout_gmem + flag_addr,&flag_512b, BPERDW);
+}
 void read_data(snap_membus_t *din_gmem, uint64_t input, snap_membus_t *buffer, uint64_t size){
-#pragma HLS INLINE
+//#pragma HLS INLINE
     uint32_t uint32_to_transfer_read, burst_length_read,uint32_in_last_word_read, index;
     uint64_t i_idx,size_read;
     i_idx = input;
@@ -87,8 +98,8 @@ void read_data(snap_membus_t *din_gmem, uint64_t input, snap_membus_t *buffer, u
     //}
 }
 
-void write_data(snap_membus_t *dout_gmem, uint64_t output, snap_membus_t *buffer,  uint64_t size){
-#pragma HLS INLINE
+void write_data(snap_membus_t *dout_gmem, uint64_t output, uint64_t addr_write_flag, snap_membus_t *buffer,  uint64_t size){
+//#pragma HLS INLINE
     uint64_t size_write=0x0, o_idx;
     uint32_t uint32_to_transfer_write, burst_length_write,uint32_in_last_word_write, index;
 
@@ -112,22 +123,12 @@ void write_data(snap_membus_t *dout_gmem, uint64_t output, snap_membus_t *buffer
         o_idx += burst_length_write;
     }
 
+    write_flag_mem(dout_gmem, addr_write_flag,false);
    // if (size_write == 0){
    //     *done = true;
    // }
 }
 
-void read_flag_mem(snap_membus_t *din_gmem, uint64_t flag_addr, bool *flag){
-    snap_membus_t flag_512b;
-    memcpy(&flag_512b, din_gmem + flag_addr, BPERDW);
-    *flag = (bool)flag_512b(0,0);
-}
-
-void write_flag_mem(snap_membus_t *dout_gmem, uint64_t flag_addr, bool flag){
-    snap_membus_t flag_512b;
-    flag_512b(0,0) = flag;
-    memcpy(dout_gmem + flag_addr,&flag_512b, BPERDW);
-}
 //----------------------------------------------------------------------
 //--- MAIN PROGRAM -----------------------------------------------------
 //----------------------------------------------------------------------
@@ -168,16 +169,22 @@ static int process_action(snap_membus_t *din_gmem, snap_membus_t *dout_gmem,
         if (read_flag && write_flag){ 
             switch (iteration_i%2){
             case 0:
+                // adding the read_flag to the read_data kills all parallelization
                 read_data(din_gmem, i_idx, bufferA, size);
-                write_data(dout_gmem, o_idx, bufferB, size);
+                // add the write_flag to the write_data to save time on parallization
+                write_data(dout_gmem, o_idx, addr_write_flag, bufferB, size);
                 read_done = true;
                 write_done = true;
+                write_flag = false;
                 break;
             case 1:
+                // adding the read_flag to the read_data kills all parallelization
                 read_data(din_gmem, i_idx, bufferB, size);
-                write_data(dout_gmem, o_idx, bufferA, size);
+                // add the write_flag to the write_data to save time on parallization
+                write_data(dout_gmem, o_idx, addr_write_flag, bufferA, size);
                 read_done = true;
                 write_done = true;
+                write_flag = false;
                 break;
             }
         }
@@ -187,16 +194,20 @@ static int process_action(snap_membus_t *din_gmem, snap_membus_t *dout_gmem,
         ///////////////////////////////////////////////////////////////
 
         // Writting flag on memory and changing internal values of those flags
+        /*
+        // This function is integrated to the write_data
         if (write_done){
             write_flag_mem(dout_gmem, addr_write_flag,false);
             write_flag = false;
         }
-
+        */
         if (read_done){
             write_flag_mem(dout_gmem, addr_read_flag,false);
             read_flag = false;
         }
-         
+        
+        // Path of improvement: if both flags can be read at the same time
+        // a single read of 128B requires a change in the mem allocation of these flags
         if (!read_flag){
             read_flag_mem(din_gmem, addr_read_flag, &read_flag);
         }
